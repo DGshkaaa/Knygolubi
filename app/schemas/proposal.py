@@ -15,6 +15,7 @@ class ProposalStatus(str, Enum):
 class ProposalCreate(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     author: str = Field(min_length=1, max_length=160)
+    isbn: str | None = Field(default=None, max_length=32)
     description: str = Field(default="", max_length=3000)
     genre: str = Field(min_length=1, max_length=80)
     cover_image_url: str | None = None
@@ -40,6 +41,7 @@ class ProposalDecision(BaseModel):
 class ProposalEdit(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=200)
     author: str | None = Field(default=None, min_length=1, max_length=160)
+    isbn: str | None = Field(default=None, max_length=32)
     description: str | None = Field(default=None, max_length=3000)
     genre: str | None = Field(default=None, min_length=1, max_length=80)
     cover_image_url: str | None = None

@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import re
 from typing import Annotated
 
 from bson import ObjectId
@@ -6,7 +7,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pymongo import ReturnDocument
 
-from app.api.deps import database_dependency, get_current_user, require_staff
+from app.api.deps import database_dependency, require_approved_user, require_staff
+from app.core.notifications import notify_new_book
 from app.schemas.book import BookCreate, BookResponse, BookStatus, BookUpdate
 from app.schemas.user import UserInDatabase
 
@@ -26,13 +28,56 @@ def parse_object_id(book_id: str) -> ObjectId:
     return ObjectId(book_id)
 
 
+def normalize_isbn(isbn: str | None) -> str | None:
+    if not isbn:
+        return None
+    normalized = re.sub(r"[\s-]", "", isbn).upper()
+    return normalized or None
+
+
+async def find_duplicate_book(
+    database: AsyncIOMotorDatabase,
+    title: str,
+    author: str,
+    isbn: str | None = None,
+    exclude_id: ObjectId | None = None,
+) -> dict | None:
+    duplicate_filters: list[dict] = [
+        {
+            "title": {"$regex": f"^{re.escape(title.strip())}$", "$options": "i"},
+            "author": {"$regex": f"^{re.escape(author.strip())}$", "$options": "i"},
+        }
+    ]
+    normalized = normalize_isbn(isbn)
+    if normalized:
+        duplicate_filters.append(
+            {
+                "$or": [
+                    {"isbn_normalized": normalized},
+                    {
+                        "isbn": {
+                            "$regex": "^[\\s-]*"
+                            + "[\\s-]*".join(re.escape(char) for char in normalized)
+                            + "[\\s-]*$",
+                            "$options": "i",
+                        }
+                    },
+                ]
+            }
+        )
+    query: dict = {"$or": duplicate_filters}
+    if exclude_id is not None:
+        query["_id"] = {"$ne": exclude_id}
+    return await database.books.find_one(query)
+
+
 @router.get("", response_model=list[BookResponse])
 async def list_books(
     response: Response,
     search: str | None = None,
     genre: str | None = None,
     availability: BookStatus | None = None,
-    sort_by: str | None = Query(default=None, pattern="^rating$"),
+    sort_by: str | None = Query(default=None, pattern="^(rating|popularity)$"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=5, ge=1, le=50),
     database: AsyncIOMotorDatabase = Depends(database_dependency),
@@ -53,6 +98,26 @@ async def list_books(
     cursor = database.books.find(filters).skip((page - 1) * page_size).limit(page_size)
     if sort_by == "rating":
         cursor = cursor.sort("rating", -1)
+    elif sort_by == "popularity":
+        cursor = cursor.sort("views", -1)
+    return [serialize_book(book) async for book in cursor]
+
+
+@router.get("/announcements", response_model=list[BookResponse])
+async def list_announcements(
+    response: Response,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=8, ge=1, le=50),
+    database: AsyncIOMotorDatabase = Depends(database_dependency),
+) -> list[BookResponse]:
+    total_count = await database.books.count_documents({})
+    response.headers["X-Has-Next"] = str(page * page_size < total_count).lower()
+    cursor = (
+        database.books.find({})
+        .sort("published_at", -1)
+        .skip((page - 1) * page_size)
+        .limit(page_size)
+    )
     return [serialize_book(book) async for book in cursor]
 
 
@@ -61,7 +126,11 @@ async def get_book(
     book_id: str,
     database: AsyncIOMotorDatabase = Depends(database_dependency),
 ) -> BookResponse:
-    book = await database.books.find_one({"_id": parse_object_id(book_id)})
+    book = await database.books.find_one_and_update(
+        {"_id": parse_object_id(book_id)},
+        {"$inc": {"views": 1}},
+        return_document=ReturnDocument.AFTER,
+    )
     if book is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Книгу не знайдено")
     return serialize_book(book)
@@ -73,9 +142,21 @@ async def create_book(
     database: Annotated[AsyncIOMotorDatabase, Depends(database_dependency)],
     _: Annotated[UserInDatabase, Depends(require_staff)],
 ) -> BookResponse:
+    duplicate = await find_duplicate_book(
+        database, payload.title, payload.author, payload.isbn
+    )
+    if duplicate is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Книга «{duplicate['title']}» автора {duplicate['author']} вже є в каталозі.",
+        )
+    published_at = datetime.now(timezone.utc)
     book_document = {
         **payload.model_dump(),
+        "isbn_normalized": normalize_isbn(payload.isbn),
+        "published_at": published_at,
         "rating": 0.0,
+        "views": 0,
         "status": BookStatus.AVAILABLE.value,
         "current_reader_id": None,
         "return_deadline": None,
@@ -85,6 +166,7 @@ async def create_book(
     }
     result = await database.books.insert_one(book_document)
     book_document["_id"] = result.inserted_id
+    await notify_new_book(database, book_document)
     return serialize_book(book_document)
 
 
@@ -99,6 +181,22 @@ async def update_book(
     changes = payload.model_dump(exclude_unset=True)
     if not changes:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Не вказано жодної зміни")
+    existing_book = await database.books.find_one({"_id": object_id})
+    if existing_book is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Книгу не знайдено")
+    updated_title = changes.get("title", existing_book["title"])
+    updated_author = changes.get("author", existing_book["author"])
+    updated_isbn = changes.get("isbn", existing_book.get("isbn"))
+    duplicate = await find_duplicate_book(
+        database, updated_title, updated_author, updated_isbn, exclude_id=object_id
+    )
+    if duplicate is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Книга «{duplicate['title']}» автора {duplicate['author']} вже є в каталозі.",
+        )
+    if "isbn" in changes:
+        changes["isbn_normalized"] = normalize_isbn(updated_isbn)
     result = await database.books.update_one({"_id": object_id}, {"$set": changes})
     if result.matched_count == 0:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Книгу не знайдено")
@@ -110,7 +208,7 @@ async def update_book(
 async def borrow_book(
     book_id: str,
     database: Annotated[AsyncIOMotorDatabase, Depends(database_dependency)],
-    current_user: Annotated[UserInDatabase, Depends(get_current_user)],
+    current_user: Annotated[UserInDatabase, Depends(require_approved_user)],
 ) -> BookResponse:
     object_id = parse_object_id(book_id)
     now = datetime.now(timezone.utc)
@@ -146,7 +244,7 @@ async def borrow_book(
 async def queue_book(
     book_id: str,
     database: Annotated[AsyncIOMotorDatabase, Depends(database_dependency)],
-    current_user: Annotated[UserInDatabase, Depends(get_current_user)],
+    current_user: Annotated[UserInDatabase, Depends(require_approved_user)],
 ) -> BookResponse:
     object_id = parse_object_id(book_id)
     book = await database.books.find_one({"_id": object_id})
@@ -194,7 +292,7 @@ async def queue_book(
 async def leave_queue(
     book_id: str,
     database: Annotated[AsyncIOMotorDatabase, Depends(database_dependency)],
-    current_user: Annotated[UserInDatabase, Depends(get_current_user)],
+    current_user: Annotated[UserInDatabase, Depends(require_approved_user)],
 ) -> BookResponse:
     object_id = parse_object_id(book_id)
     result = await database.books.update_one(
@@ -210,7 +308,7 @@ async def leave_queue(
 async def return_book(
     book_id: str,
     database: Annotated[AsyncIOMotorDatabase, Depends(database_dependency)],
-    current_user: Annotated[UserInDatabase, Depends(get_current_user)],
+    current_user: Annotated[UserInDatabase, Depends(require_approved_user)],
     finished: bool = True,
 ) -> BookResponse:
     object_id = parse_object_id(book_id)
@@ -268,7 +366,7 @@ async def return_book(
 async def abandon_book(
     book_id: str,
     database: Annotated[AsyncIOMotorDatabase, Depends(database_dependency)],
-    current_user: Annotated[UserInDatabase, Depends(get_current_user)],
+    current_user: Annotated[UserInDatabase, Depends(require_approved_user)],
 ) -> BookResponse:
     object_id = parse_object_id(book_id)
     book = await database.books.find_one({"_id": object_id})

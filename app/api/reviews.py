@@ -5,7 +5,7 @@ from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from app.api.deps import database_dependency, get_current_user
+from app.api.deps import database_dependency, require_approved_user
 from app.api.books import parse_object_id
 from app.schemas.review import ReviewCreate, ReviewResponse
 from app.schemas.user import UserInDatabase, UserRole
@@ -37,7 +37,7 @@ async def create_review(
     book_id: str,
     payload: ReviewCreate,
     database: Annotated[AsyncIOMotorDatabase, Depends(database_dependency)],
-    current_user: Annotated[UserInDatabase, Depends(get_current_user)],
+    current_user: Annotated[UserInDatabase, Depends(require_approved_user)],
 ) -> ReviewResponse:
     object_id = parse_object_id(book_id)
     if await database.books.find_one({"_id": object_id}, {"_id": 1}) is None:
@@ -66,7 +66,7 @@ async def delete_review(
     book_id: str,
     review_id: str,
     database: Annotated[AsyncIOMotorDatabase, Depends(database_dependency)],
-    current_user: Annotated[UserInDatabase, Depends(get_current_user)],
+    current_user: Annotated[UserInDatabase, Depends(require_approved_user)],
 ) -> None:
     book_object_id = parse_object_id(book_id)
     review_object_id = parse_object_id(review_id)

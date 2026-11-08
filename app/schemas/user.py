@@ -13,9 +13,14 @@ class UserRole(str, Enum):
 
 
 class Notification(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     message: str
     is_read: bool = False
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    type: str = "general"
+    book_id: PyObjectId | None = None
+    notification_id: str | None = None
 
 
 class UserBase(BaseModel):
@@ -36,6 +41,8 @@ class UserInDatabase(UserBase):
 
     id: PyObjectId = Field(alias="_id")
     role: UserRole = UserRole.STUDENT
+    email_verified: bool = True
+    is_approved: bool = True
     password_hash: str
     avatar_url: str | None = None
     notifications: list[Notification] = Field(default_factory=list)
@@ -52,6 +59,8 @@ class UserResponse(UserBase):
 
     id: PyObjectId = Field(alias="_id")
     role: UserRole = UserRole.STUDENT
+    email_verified: bool = True
+    is_approved: bool = True
     avatar_url: str | None = None
     notifications: list[Notification] = Field(default_factory=list)
 

@@ -14,11 +14,14 @@ api.interceptors.request.use((config) => {
 export const authApi = {
   login: (data) => api.post('/auth/login', data),
   register: (data) => api.post('/auth/register', data),
+  resendVerification: (data) => api.post('/auth/resend-verification', data),
+  verifyEmail: (token) => api.get('/auth/verify-email', { params: { token } }),
   me: () => api.get('/auth/me'),
 }
 
 export const booksApi = {
   list: (params) => api.get('/books', { params }),
+  announcements: (params) => api.get('/books/announcements', { params }),
   get: (id) => api.get(`/books/${id}`),
   create: (data) => api.post('/books', data),
   update: (id, data) => api.put(`/books/${id}`, data),
@@ -34,6 +37,7 @@ export const booksApi = {
 
 export const notificationsApi = {
   list: () => api.get('/users/me/notifications'),
+  markRead: () => api.patch('/users/me/notifications/read'),
   borrowed: () => api.get('/users/me/borrowed'),
 }
 
@@ -50,7 +54,9 @@ export const profilesApi = {
 }
 
 export const moderationApi = {
-  users: () => api.get('/moderation/users'),
+  users: (params) => api.get('/moderation/users', { params }),
+  deleteUser: (id) => api.delete(`/moderation/users/${id}`),
+  updateApproval: (id, isApproved) => api.patch(`/moderation/users/${id}/approval`, null, { params: { is_approved: isApproved } }),
   updateRole: (id, role) => api.patch(`/moderation/users/${id}/role`, null, { params: { role } }),
   proposals: () => api.get('/moderation/proposals'),
   editProposal: (id, data) => api.patch(`/moderation/proposals/${id}/edit`, data),

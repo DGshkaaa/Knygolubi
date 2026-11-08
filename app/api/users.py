@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.api.books import parse_object_id
-from app.api.deps import database_dependency, get_current_user
+from app.api.deps import database_dependency, get_current_user, require_approved_user
 from app.schemas.profile import ProfileResponse, ProfileUpdate
 from app.schemas.review import ReviewResponse
 from app.schemas.user import UserInDatabase
@@ -49,6 +49,8 @@ async def build_profile(database: AsyncIOMotorDatabase, user: dict) -> ProfileRe
         "name": user["name"],
         "email": user["email"],
         "role": user.get("role", "student"),
+        "email_verified": user.get("email_verified", True),
+        "is_approved": user.get("is_approved", True),
         "avatar_url": user.get("avatar_url"),
         "currently_reading": currently_reading,
         "want_to_read_books": want_to_read,
@@ -73,7 +75,7 @@ async def my_profile(
 @router.put("/me/profile", response_model=ProfileResponse)
 async def update_profile(
     payload: ProfileUpdate,
-    current_user: Annotated[UserInDatabase, Depends(get_current_user)],
+    current_user: Annotated[UserInDatabase, Depends(require_approved_user)],
     database: Annotated[AsyncIOMotorDatabase, Depends(database_dependency)],
 ) -> ProfileResponse:
     changes = payload.model_dump(exclude_unset=True)
@@ -87,6 +89,7 @@ async def update_profile(
 @router.get("/{user_id}/profile", response_model=ProfileResponse)
 async def public_profile(
     user_id: str,
+    _: Annotated[UserInDatabase, Depends(require_approved_user)],
     database: Annotated[AsyncIOMotorDatabase, Depends(database_dependency)],
 ) -> ProfileResponse:
     user = await database.users.find_one({"_id": parse_object_id(user_id)})
@@ -98,7 +101,7 @@ async def public_profile(
 @router.post("/me/favorites/{book_id}")
 async def toggle_favorite(
     book_id: str,
-    current_user: Annotated[UserInDatabase, Depends(get_current_user)],
+    current_user: Annotated[UserInDatabase, Depends(require_approved_user)],
     database: Annotated[AsyncIOMotorDatabase, Depends(database_dependency)],
 ) -> dict[str, bool]:
     object_id = parse_object_id(book_id)

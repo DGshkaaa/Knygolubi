@@ -71,3 +71,21 @@ async def require_staff(
             detail="Потрібні права працівника платформи",
         )
     return current_user
+
+
+async def require_approved_user(
+    current_user: Annotated[UserInDatabase, Depends(get_current_user)],
+) -> UserInDatabase:
+    if current_user.role in {UserRole.ADMIN, UserRole.MODERATOR}:
+        return current_user
+    if not current_user.email_verified:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Спочатку підтвердіть електронну пошту",
+        )
+    if not current_user.is_approved:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Дочекайтеся підтвердження облікового запису модератором",
+        )
+    return current_user

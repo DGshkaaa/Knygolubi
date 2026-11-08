@@ -20,6 +20,8 @@ class ProfileResponse(BaseModel):
     name: str
     email: EmailStr
     role: UserRole
+    email_verified: bool = True
+    is_approved: bool = True
     avatar_url: str | None = None
     currently_reading: list[BookResponse] = Field(default_factory=list)
     want_to_read_books: list[BookResponse] = Field(default_factory=list)

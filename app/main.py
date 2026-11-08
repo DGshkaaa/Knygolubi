@@ -31,7 +31,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["X-Has-Next"],
+    expose_headers=["X-Has-Next", "X-Total-Count"],
 )
 app.include_router(auth_router)
 app.include_router(books_router)

@@ -40,6 +40,7 @@ SUPPORTED_GENRES = (
 class BookBase(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     author: str = Field(min_length=1, max_length=160)
+    isbn: str | None = Field(default=None, max_length=32)
     description: str = ""
     genre: str = Field(min_length=1, max_length=80)
     cover_image_url: str | None = None
@@ -52,6 +53,7 @@ class BookCreate(BookBase):
 class BookUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=200)
     author: str | None = Field(default=None, min_length=1, max_length=160)
+    isbn: str | None = Field(default=None, max_length=32)
     description: str | None = None
     genre: str | None = Field(default=None, min_length=1, max_length=80)
     cover_image_url: str | None = None
@@ -62,6 +64,8 @@ class BookResponse(BookBase):
 
     id: PyObjectId = Field(alias="_id")
     rating: float = Field(default=0.0, ge=0.0, le=5.0)
+    views: int = Field(default=0, ge=0)
+    published_at: datetime | None = None
     status: BookStatus = BookStatus.AVAILABLE
     current_reader_id: PyObjectId | None = None
     return_deadline: datetime | None = None
