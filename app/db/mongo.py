@@ -11,6 +11,7 @@ async def connect_to_mongo() -> None:
     global client, database
     client = AsyncIOMotorClient(settings.mongodb_url)
     database = client[settings.mongodb_database]
+    await database.users.create_index("email", unique=True)
 
 
 async def close_mongo_connection() -> None:

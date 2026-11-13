@@ -19,6 +19,7 @@ import {
 } from "./api";
 import { useAuth } from "./auth";
 import "./App.css";
+import "./forms.css";
 
 const genreLabels = {
   Fiction: "Художня література",
@@ -211,8 +212,8 @@ function Layout() {
       <main>
         <Routes>
           <Route path="/" element={<Catalog />} />
-          <Route path="/login" element={<AuthForm mode="login" />} />
-          <Route path="/register" element={<AuthForm mode="register" />} />
+          <Route path="/login" element={<AuthForm key="login" mode="login" />} />
+          <Route path="/register" element={<AuthForm key="register" mode="register" />} />
           <Route path="/verify-email" element={<VerifyEmailPage />} />
           <Route path="/books/:id" element={<BookDetails />} />
           <Route
@@ -336,6 +337,7 @@ function Catalog() {
     setPage(1);
   }, [search, genre, availability, sort]);
   useEffect(() => {
+    let active = true;
     setLoading(true);
     const params = {};
     params.page = page;
@@ -348,12 +350,14 @@ function Catalog() {
     }
     (section === "announcements" ? booksApi.announcements(params) : booksApi.list(params))
       .then(({ data, headers }) => {
+        if (!active) return;
         setBooks(data);
         setHasNextPage(headers["x-has-next"] === "true");
         setError("");
       })
-      .catch(() => setError("Не вдалося завантажити каталог."))
-      .finally(() => setLoading(false));
+      .catch(() => { if (active) setError("Не вдалося завантажити каталог."); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
   }, [search, genre, availability, sort, page, pageSize, section]);
   return (
     <section className="page catalog-page">
@@ -685,84 +689,92 @@ function BookDetails() {
   );
 }
 
+function requestMessage(error, fallback) {
+  const detail = error.response?.data?.detail;
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) return "Перевірте правильність пошти, імені та довжину пароля.";
+  return fallback;
+}
+
+function PanelSearch({ value, onChange, label, placeholder }) {
+  return <label className="panel-search">
+    <span className="field-caption">{label}</span>
+    <span className="panel-search-control">
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 4.5 4.5" /></svg>
+      <input type="search" value={value} placeholder={placeholder} onChange={(event) => onChange(event.target.value)} />
+      {value && <button type="button" aria-label="Очистити пошук" onClick={() => onChange("")}>×</button>}
+    </span>
+  </label>;
+}
+
 function AuthForm({ mode }) {
   const { login, register } = useAuth();
   const navigate = useNavigate();
+  const isRegister = mode === "register";
   const [form, setForm] = useState({ name: "", email: "", password: "" });
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [canResend, setCanResend] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
   const submit = async (event) => {
     event.preventDefault();
-    setError("");
-    setMessage("");
+    if (busy) return;
+    setError(""); setMessage(""); setCanResend(false); setBusy(true);
     try {
-      if (mode === "login")
-        await login({ email: form.email, password: form.password });
+      const email = form.email.trim();
+      if (!isRegister) await login({ email, password: form.password });
       else {
-        await register(form);
+        await register({ ...form, name: form.name.trim(), email });
         setCanResend(true);
-        setMessage("Реєстрацію створено. Перевірте пошту та перейдіть за посиланням для підтвердження email.");
+        setMessage(`Лист підтвердження надіслано на ${email}. Відкрийте його та натисніть «Підтвердити пошту». Посилання дійсне 24 години.`);
         return;
       }
       navigate("/");
     } catch (requestError) {
-      setCanResend(requestError.response?.status === 403 || requestError.response?.status === 409);
-      setError(requestError.response?.data?.detail || "Перевірте дані та спробуйте ще раз.");
-    }
+      setCanResend([403, 409, 502].includes(requestError.response?.status));
+      setError(requestMessage(requestError, "Не вдалося з’єднатися із сервером. Спробуйте ще раз."));
+    } finally { setBusy(false); }
   };
   const resendVerification = async () => {
-    setError("");
+    if (busy || !form.email.trim()) return;
+    setError(""); setMessage(""); setBusy(true);
     try {
-      const { data } = await authApi.resendVerification({ email: form.email });
-      setMessage(data.message);
+      const { data } = await authApi.resendVerification({ email: form.email.trim() });
+      setMessage(data.message + " Перевірте також папку «Спам».");
       setCanResend(false);
     } catch (requestError) {
-      setError(requestError.response?.data?.detail || "Не вдалося повторно надіслати лист.");
-    }
+      setError(requestMessage(requestError, "Не вдалося повторно надіслати лист. Спробуйте ще раз."));
+    } finally { setBusy(false); }
   };
   return (
     <section className="page auth-page">
-      <p className="eyebrow">КНИГОЛЮБИ</p>
-      <h1>
-        {mode === "login" ? "Раді вас бачити" : "Створіть читацький профіль"}
-      </h1>
-      <form onSubmit={submit}>
-        {mode === "register" && (
-          <input
-            required
-            placeholder="Ім’я"
-            value={form.name}
-            onChange={(event) => setForm({ ...form, name: event.target.value })}
-          />
-        )}
-        <input
-          required
-          type="email"
-          placeholder="Email"
-          value={form.email}
-          onChange={(event) => setForm({ ...form, email: event.target.value })}
-        />
-        <input
-          required
-          minLength="8"
-          type="password"
-          placeholder="Пароль"
-          value={form.password}
-          onChange={(event) =>
-            setForm({ ...form, password: event.target.value })
-          }
-        />
-        <button className="primary" type="submit">
-          {mode === "login" ? "Увійти" : "Зареєструватися"}
-        </button>
-      </form>
-      {error && <p className="error">{error}</p>}
-      {message && <p className="notice">{message}</p>}
-      {canResend && <button className="secondary" type="button" onClick={resendVerification}>Надіслати лист підтвердження ще раз</button>}
-      <Link to={mode === "login" ? "/register" : "/login"}>
-        {mode === "login" ? "Ще немає профілю?" : "Вже маєте профіль?"}
-      </Link>
+      <aside className="auth-story">
+        <p className="eyebrow">СПІЛЬНОТА КНИГОЛЮБІВ</p>
+        <div className="auth-book-art" aria-hidden="true"><span>Ще одна</span><strong>хороша<br />історія.</strong><i>Починається з вас</i></div>
+        <h2>Книги зближують.</h2>
+        <p>Знаходьте нові історії, діліться улюбленими книгами та зберігайте власну читацьку полицю.</p>
+        <span className="auth-story-note">Ваша наступна книга вже чекає</span>
+      </aside>
+      <div className="auth-card">
+        <p className="eyebrow">{isRegister ? "НОВИЙ РОЗДІЛ" : "З ПОВЕРНЕННЯМ"}</p>
+        <h1>{isRegister ? "Станьте частиною історії" : "Раді вас бачити"}</h1>
+        <p className="auth-intro">{isRegister ? "Створіть профіль і відкрийте для себе більше хороших книг." : "Увійдіть, щоб повернутися до своєї полиці та нових відкриттів."}</p>
+        <form onSubmit={submit} className="auth-form" aria-busy={busy}>
+          <fieldset disabled={busy}>
+            {isRegister && <label>Ваше ім’я<input required name="name" autoComplete="name" maxLength={120} placeholder="Як до вас звертатися?" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label>}
+            <label>Електронна пошта<input required name="email" autoComplete="email" type="email" placeholder="you@example.com" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} /></label>
+            <label>Пароль<span className="password-control"><input required name="password" autoComplete={isRegister ? "new-password" : "current-password"} minLength={8} maxLength={128} type={showPassword ? "text" : "password"} placeholder={isRegister ? "Придумайте надійний пароль" : "Введіть ваш пароль"} value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} /><button type="button" aria-label={showPassword ? "Приховати пароль" : "Показати пароль"} aria-pressed={showPassword} onClick={() => setShowPassword(!showPassword)}>{showPassword ? "Сховати" : "Показати"}</button></span></label>
+            {isRegister && <small className="field-hint">Від 8 до 128 символів. Після реєстрації підтвердіть вашу пошту.</small>}
+            <button className="primary auth-submit" type="submit">{busy ? "Зачекайте…" : isRegister ? "Створити профіль" : "Увійти"}<span aria-hidden="true"> →</span></button>
+          </fieldset>
+        </form>
+        {error && <p className="auth-feedback error" role="alert">{error}</p>}
+        {message && <div className="auth-feedback success" role="status"><strong>Перевірте пошту</strong><p>{message}</p><small>Не бачите листа? Перегляньте папку «Спам».</small></div>}
+        {canResend && <button className="secondary auth-resend" disabled={busy} type="button" onClick={resendVerification}>{busy ? "Надсилаємо…" : "Надіслати лист ще раз"}</button>}
+        <p className="auth-switch">{isRegister ? "Вже маєте профіль?" : "Вперше у Книголюбах?"} <Link to={isRegister ? "/login" : "/register"}>{isRegister ? "Увійти" : "Зареєструватися"}</Link></p>
+        <Link className="auth-back" to="/">← Повернутися до каталогу</Link>
+      </div>
     </section>
   );
 }
@@ -772,23 +784,31 @@ function VerifyEmailPage() {
   const token = searchParams.get("token");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const verification = useRef(null);
   useEffect(() => {
+    let active = true;
+    setMessage(""); setError("");
     if (!token) {
       setError("У посиланні немає токена підтвердження.");
       return;
     }
-    authApi.verifyEmail(token)
-      .then(({ data }) => setMessage(data.message))
-      .catch((requestError) => setError(requestError.response?.data?.detail || "Не вдалося підтвердити email."));
+    // Reuse the request during StrictMode's effect replay: tokens are single-use.
+    if (verification.current?.token !== token) verification.current = { token, request: authApi.verifyEmail(token) };
+    verification.current.request
+      .then(({ data }) => { if (active) setMessage(data.message); })
+      .catch((requestError) => { if (active) setError(requestMessage(requestError, "Не вдалося підтвердити пошту.")); });
+    return () => { active = false; };
   }, [token]);
   return (
-    <section className="page auth-page">
-      <p className="eyebrow">ПІДТВЕРДЖЕННЯ EMAIL</p>
-      <h1>{error ? "Посилання не працює" : message ? "Email підтверджено" : "Перевіряємо посилання..."}</h1>
-      {message && <p className="notice">{message}</p>}
-      {error && <p className="error">{error}</p>}
-      {message && <Link className="primary" to="/login">Перейти до входу</Link>}
-      {error && <Link to="/register">Повернутися до реєстрації</Link>}
+    <section className="page verification-page">
+      <div className="auth-card">
+        <p className="eyebrow">ПІДТВЕРДЖЕННЯ ПОШТИ</p>
+        <div className="verification-icon" aria-hidden="true">{error ? "!" : message ? "✓" : "…"}</div>
+        <h1>{error ? "Потрібне нове посилання" : message ? "Пошту підтверджено" : "Перевіряємо посилання…"}</h1>
+        {message && <p className="auth-feedback success" role="status">{message}</p>}
+        {error && <p className="auth-feedback error" role="alert">{error}</p>}
+        <Link className="primary auth-submit" to="/login">{error ? "Увійти та запросити новий лист" : "Перейти до входу"}</Link>
+      </div>
     </section>
   );
 }
@@ -1383,11 +1403,11 @@ function BookManagement() {
   return (
     <section className="management-section book-management">
       <div className="section-heading">
-        <p className="eyebrow">CATALOG</p>
+        <p className="eyebrow">КАТАЛОГ</p>
         <h2>Книги на полиці</h2>
         <p>Редагуйте дані або прибирайте застарілі позиції.</p>
       </div>
-      <input className="management-search" placeholder="Пошук книг за назвою або автором" value={bookSearch} onChange={(event) => { setBookSearch(event.target.value); setPage(1); }} />
+      <PanelSearch label="Пошук у каталозі" placeholder="Назва книги або автор…" value={bookSearch} onChange={(value) => { setBookSearch(value); setPage(1); }} />
       {message && <p className="notice">{message}</p>}
       <div className="managed-books">
         {books.map((book) =>
@@ -1648,19 +1668,11 @@ function UserManagementPanel({ allowRoleChanges = false, onCountChange }) {
   return (
     <section className="management-section">
       <div className="section-heading">
-        <p className="eyebrow">PEOPLE</p>
+        <p className="eyebrow">СПІЛЬНОТА</p>
         <h2>Користувачі платформи</h2>
       </div>
       {message && <p className="notice">{message}</p>}
-      <input
-        className="management-search"
-        placeholder="Пошук за іменем або email"
-        value={search}
-        onChange={(event) => {
-          setSearch(event.target.value);
-          setPage(1);
-        }}
-      />
+      <PanelSearch label="Знайти читача" placeholder="Ім’я або електронна пошта…" value={search} onChange={(value) => { setSearch(value); setPage(1); }} />
       <div className="user-list">
         {users.map((user) => (
           <article className="user-row" key={user._id}>

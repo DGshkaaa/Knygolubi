@@ -6,9 +6,9 @@ import secrets
 import smtplib
 from fastapi import APIRouter, Depends, HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
+from pymongo.errors import DuplicateKeyError
 
 from app.api.deps import database_dependency, get_current_user
-from app.core.config import settings
 from app.core.email import email_is_configured, send_verification_email
 from app.core.security import create_access_token, hash_password, verify_password
 from app.schemas.user import UserCreate, UserInDatabase, UserResponse
@@ -60,7 +60,10 @@ async def register(
         "wishlist_books": [],
         "joined_at": datetime.now(timezone.utc),
     }
-    result = await database.users.insert_one(user_document)
+    try:
+        await database.users.insert_one(user_document)
+    except DuplicateKeyError as error:
+        raise HTTPException(status_code=409, detail="Ця електронна пошта вже зареєстрована") from error
     try:
         await send_verification_email(user_document["email"], verification_token)
     except (OSError, smtplib.SMTPException) as error:

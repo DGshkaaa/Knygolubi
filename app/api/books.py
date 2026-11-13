@@ -74,7 +74,7 @@ async def find_duplicate_book(
 @router.get("", response_model=list[BookResponse])
 async def list_books(
     response: Response,
-    search: str | None = None,
+    search: str | None = Query(default=None, max_length=200),
     genre: str | None = None,
     availability: BookStatus | None = None,
     sort_by: str | None = Query(default=None, pattern="^(rating|popularity)$"),
@@ -83,10 +83,11 @@ async def list_books(
     database: AsyncIOMotorDatabase = Depends(database_dependency),
 ) -> list[BookResponse]:
     filters: dict = {}
-    if search:
+    if search and search.strip():
+        pattern = re.escape(search.strip())
         filters["$or"] = [
-            {"title": {"$regex": search, "$options": "i"}},
-            {"author": {"$regex": search, "$options": "i"}},
+            {"title": {"$regex": pattern, "$options": "i"}},
+            {"author": {"$regex": pattern, "$options": "i"}},
         ]
     if genre:
         filters["genre"] = genre
