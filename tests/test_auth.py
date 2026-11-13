@@ -22,8 +22,9 @@ from app.core.security import decode_access_token, verify_password
 
 
 class Users:
-    def __init__(self):
+    def __init__(self, unique_email=True):
         self.documents = []
+        self.unique_email = unique_email
 
     def matches(self, document, query):
         for key, value in query.items():
@@ -35,11 +36,14 @@ class Users:
                 return False
         return True
 
-    async def find_one(self, query):
-        return next((copy.deepcopy(d) for d in self.documents if self.matches(d, query)), None)
+    async def find_one(self, query, sort=None):
+        documents = self.documents
+        for key, direction in reversed(sort or []):
+            documents = sorted(documents, key=lambda item: item[key], reverse=direction < 0)
+        return next((copy.deepcopy(d) for d in documents if self.matches(d, query)), None)
 
     async def insert_one(self, document):
-        if any(d['email'] == document['email'] for d in self.documents):
+        if self.unique_email and any(d['email'] == document['email'] for d in self.documents):
             raise DuplicateKeyError('email')
         document['_id'] = ObjectId()
         self.documents.append(copy.deepcopy(document))
@@ -55,13 +59,27 @@ class Users:
         return SimpleNamespace(modified_count=0)
 
 
+    async def delete_one(self, query):
+        for index, document in enumerate(self.documents):
+            if self.matches(document, query):
+                del self.documents[index]
+                return SimpleNamespace(deleted_count=1)
+        return SimpleNamespace(deleted_count=0)
+
+    async def delete_many(self, query):
+        original = len(self.documents)
+        self.documents[:] = [d for d in self.documents if not self.matches(d, query)]
+        return SimpleNamespace(deleted_count=original-len(self.documents))
+
+
 class AuthTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.users = Users()
+        self.pending = Users(unique_email=False)
         self.app = FastAPI()
         self.app.include_router(auth.router)
         async def test_database():
-            return SimpleNamespace(users=self.users)
+            return SimpleNamespace(users=self.users, pending_registrations=self.pending)
         self.app.dependency_overrides[auth.database_dependency] = test_database
         self.configured = patch.object(auth, 'email_is_configured', return_value=True)
         self.delivery = patch.object(auth, 'send_verification_email', new_callable=AsyncMock)
@@ -92,75 +110,124 @@ class AuthTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 201, data)
         return self.send.call_args.args[1]
 
-    async def test_registration_hashes_password_and_token(self):
+    async def test_registration_only_stores_temporary_hashed_application(self):
         token = await self.register()
-        document = self.users.documents[0]
+        self.assertEqual(self.users.documents, [])
+        document = self.pending.documents[0]
         self.assertEqual(document['email'], 'reader@example.com')
         self.assertEqual(document['name'], 'Читач')
         self.assertTrue(verify_password(self.payload['password'], document['password_hash']))
         self.assertNotEqual(document['password_hash'], self.payload['password'])
         self.assertEqual(document['email_verification_token_hash'], hashlib.sha256(token.encode()).hexdigest())
-        self.assertFalse(document['email_verified'])
-        self.assertFalse(document['is_approved'])
+        self.assertNotIn('role', document)
         self.send.assert_awaited_once_with('reader@example.com', token)
 
     async def test_full_register_verify_login_flow(self):
         token = await self.register()
         credentials = {k: self.payload[k] for k in ('email', 'password')}
         self.assertEqual((await self.request('login', credentials))[0], 403)
+        self.assertEqual(self.users.documents, [])
         self.assertEqual((await self.request('verify-email', query={'token': token}))[0], 200)
+        self.assertEqual(len(self.users.documents), 1)
+        document = self.users.documents[0]
+        self.assertTrue(document['email_verified'])
+        self.assertFalse(document['is_approved'])
+        self.assertEqual(document['role'], 'student')
         status, response = await self.request('login', credentials)
         self.assertEqual(status, 200)
-        self.assertEqual(decode_access_token(response['access_token'])['sub'], str(self.users.documents[0]['_id']))
-        self.assertNotIn('email_verification_token_hash', self.users.documents[0])
+        self.assertEqual(decode_access_token(response['access_token'])['sub'], str(document['_id']))
+        self.assertEqual(self.pending.documents, [])
         self.assertEqual((await self.request('verify-email', query={'token': token}))[0], 400)
 
-    async def test_duplicate_registration(self):
+    async def test_unconfirmed_address_does_not_block_registration(self):
         await self.register()
+        await self.register()
+        self.assertEqual(self.users.documents, [])
+        self.assertEqual(len(self.pending.documents), 2)
+
+    async def test_confirmed_address_does_block_registration(self):
+        token = await self.register()
+        await self.request('verify-email', query={'token': token})
         self.assertEqual((await self.request('register', self.payload))[0], 409)
         self.assertEqual(len(self.users.documents), 1)
 
-    async def test_concurrent_duplicate_returns_conflict(self):
+    async def test_concurrent_confirmation_returns_conflict(self):
+        token = await self.register()
         with patch.object(self.users, 'insert_one', side_effect=DuplicateKeyError('email')):
-            self.assertEqual((await self.request('register', self.payload))[0], 409)
-        self.send.assert_not_awaited()
+            self.assertEqual((await self.request('verify-email', query={'token': token}))[0], 409)
+        self.assertEqual(self.users.documents, [])
+
+    async def test_competing_registration_never_overwrites_confirmed_password(self):
+        first = await self.register()
+        await self.request('register', {**self.payload, 'password':'different-password-123'})
+        second = self.send.call_args.args[1]
+        self.assertEqual((await self.request('verify-email', query={'token': first}))[0], 200)
+        self.assertEqual((await self.request('verify-email', query={'token': second}))[0], 400)
+        self.assertTrue(verify_password(self.payload['password'], self.users.documents[0]['password_hash']))
+        self.assertEqual(len(self.users.documents), 1)
 
     async def test_invalid_input(self):
         for changes in ({'password': 'short'}, {'email': 'invalid'}, {'name': '   '}, {'role': 'admin'}):
             with self.subTest(changes=changes):
                 self.assertEqual((await self.request('register', {**self.payload, **changes}))[0], 422)
-        self.assertEqual(len(self.users.documents), 0)
+        self.assertEqual(self.users.documents, [])
+        self.assertEqual(self.pending.documents, [])
 
     async def test_unconfigured_mail_does_not_create_account(self):
         with patch.object(auth, 'email_is_configured', return_value=False):
             self.assertEqual((await self.request('register', self.payload))[0], 503)
             self.assertEqual((await self.request('resend-verification', {'email': self.payload['email']}))[0], 503)
-        self.assertEqual(len(self.users.documents), 0)
+        self.assertEqual(self.users.documents, [])
+        self.assertEqual(self.pending.documents, [])
 
-    async def test_mail_failure_recoverable_by_resend(self):
+    async def test_mail_failure_creates_no_account_and_allows_retry(self):
         self.send.side_effect = smtplib.SMTPException('unavailable')
         self.assertEqual((await self.request('register', self.payload))[0], 502)
-        self.assertEqual(len(self.users.documents), 1)
+        self.assertEqual(self.users.documents, [])
         self.send.side_effect = None
         status, _ = await self.request('resend-verification', {'email': self.payload['email']})
         self.assertEqual(status, 200)
         token = self.send.call_args.args[1]
         self.assertEqual((await self.request('verify-email', query={'token': token}))[0], 200)
+        self.assertEqual(len(self.users.documents), 1)
+
+    async def test_mail_failure_does_not_block_new_registration(self):
+        self.send.side_effect = smtplib.SMTPException('unavailable')
+        self.assertEqual((await self.request('register', self.payload))[0], 502)
+        self.send.side_effect = None
+        await self.register()
+        self.assertEqual(self.users.documents, [])
+
+    async def test_provider_configuration_failure_leaves_no_account(self):
+        self.send.side_effect = email.EmailDeliveryError('private internal cause', public_message=email.MAIL_CONFIGURATION_MESSAGE)
+        status, response = await self.request('register', self.payload)
+        self.assertEqual(status, 502)
+        self.assertEqual(response['detail'], email.MAIL_CONFIGURATION_MESSAGE)
+        self.assertNotIn('private', response['detail'])
+        self.assertEqual(self.users.documents, [])
 
     async def test_expired_and_unknown_tokens(self):
         token = await self.register()
-        self.users.documents[0]['email_verification_expires_at'] = datetime.now(timezone.utc) - timedelta(seconds=1)
+        self.pending.documents[0]['email_verification_expires_at'] = datetime.now(timezone.utc) - timedelta(seconds=1)
         for value in (token, 'invalid'):
             self.assertEqual((await self.request('verify-email', query={'token': value}))[0], 400)
-        self.assertFalse(self.users.documents[0]['email_verified'])
+        self.assertEqual(self.users.documents, [])
+        await self.register()
 
-    async def test_resend_rotates_token(self):
+    async def test_resend_rotates_token_after_success(self):
         old = await self.register()
         await self.request('resend-verification', {'email': self.payload['email']})
         new = self.send.call_args.args[1]
         self.assertNotEqual(old, new)
         self.assertEqual((await self.request('verify-email', query={'token': old}))[0], 400)
         self.assertEqual((await self.request('verify-email', query={'token': new}))[0], 200)
+
+    async def test_failed_resend_preserves_previous_link(self):
+        old = await self.register()
+        self.send.side_effect = email.EmailDeliveryError('unavailable')
+        self.assertEqual((await self.request('resend-verification', {'email': self.payload['email']}))[0], 502)
+        self.assertEqual((await self.request('verify-email', query={'token': old}))[0], 200)
+        self.assertEqual(len(self.users.documents), 1)
 
     async def test_resend_unknown_and_verified_are_private(self):
         token = await self.register()
@@ -171,10 +238,59 @@ class AuthTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(verified, unknown)
         self.send.assert_not_awaited()
 
+    async def test_expired_application_cannot_be_resurrected_by_resend(self):
+        await self.register()
+        self.pending.documents[0]['email_verification_expires_at'] = datetime.now(timezone.utc) - timedelta(seconds=1)
+        self.send.reset_mock()
+        self.assertEqual((await self.request('resend-verification', {'email': self.payload['email']}))[0], 200)
+        self.send.assert_not_awaited()
+        self.assertEqual(self.users.documents, [])
+
     async def test_wrong_password_and_unknown_account(self):
         await self.register()
         for address in (self.payload['email'], 'unknown@example.com'):
             self.assertEqual((await self.request('login', {'email': address, 'password': 'wrong-password'}))[0], 401)
+
+    async def add_legacy_user(self, role='student'):
+        await self.users.insert_one({
+            'email':'reader@example.com', 'name':'Old name',
+            'password_hash': auth.hash_password('old-password'),
+            'email_verified':False, 'is_approved':False, 'role':role,
+            'favorites':['preserved-book'],
+        })
+        return self.users.documents[0]['_id']
+
+    async def test_old_unconfirmed_record_does_not_block_and_is_preserved(self):
+        user_id = await self.add_legacy_user()
+        token = await self.register()
+        self.assertFalse(self.users.documents[0]['email_verified'])
+        self.assertEqual((await self.request('verify-email', query={'token':token}))[0], 200)
+        document = self.users.documents[0]
+        self.assertEqual(document['_id'], user_id)
+        self.assertEqual(document['favorites'], ['preserved-book'])
+        self.assertTrue(document['email_verified'])
+        self.assertTrue(verify_password(self.payload['password'],document['password_hash']))
+
+    async def test_resend_supports_old_unconfirmed_record(self):
+        await self.add_legacy_user()
+        self.assertEqual((await self.request('resend-verification', {'email': self.payload['email']}))[0], 200)
+        token = self.send.call_args.args[1]
+        self.assertEqual((await self.request('verify-email', query={'token': token}))[0], 200)
+        self.assertTrue(verify_password('old-password',self.users.documents[0]['password_hash']))
+
+    async def test_predeployment_verification_links_still_work(self):
+        await self.add_legacy_user()
+        document = self.users.documents[0]
+        document['email_verification_token_hash'] = hashlib.sha256(b'old-link').hexdigest()
+        document['email_verification_expires_at'] = datetime.now(timezone.utc) + timedelta(hours=1)
+        self.assertEqual((await self.request('verify-email',query={'token':'old-link'}))[0], 200)
+        self.assertTrue(document['email_verified'])
+        self.assertNotIn('email_verification_token_hash', document)
+
+    async def test_staff_address_is_not_reclaimable(self):
+        await self.add_legacy_user(role='admin')
+        self.assertEqual((await self.request('register',self.payload))[0], 409)
+        self.send.assert_not_awaited()
 
 
 class EmailTests(unittest.IsolatedAsyncioTestCase):

@@ -25,58 +25,56 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 logger = logging.getLogger(__name__)
 
 
+def is_registered(user: dict | None) -> bool:
+    # Older student records may exist before email confirmation. They must not
+    # reserve an address. Staff and accounts predating verification stay intact.
+    return user is not None and (
+        user.get("email_verified", True) or user.get("role") != "student"
+    )
+
+
+async def send_registration_link(database, details: dict) -> dict:
+    token = secrets.token_urlsafe(32)
+    now = datetime.now(timezone.utc)
+    pending = {
+        "name": details["name"],
+        "email": details["email"],
+        "password_hash": details["password_hash"],
+        "email_verification_token_hash": hashlib.sha256(token.encode()).hexdigest(),
+        "email_verification_expires_at": now + timedelta(hours=24),
+        "created_at": now,
+    }
+    # This collection is temporary and is never exposed as a user account.
+    await database.pending_registrations.insert_one(pending)
+    try:
+        await send_verification_email(pending["email"], token)
+    except (OSError, smtplib.SMTPException) as error:
+        logger.error("Registration email delivery failed: %s", type(error).__name__)
+        detail = getattr(error, "public_message", None) or (
+            "Не вдалося надіслати лист підтвердження. Акаунт не створено. "
+            "Спробуйте повторити надсилання або зареєструватися ще раз."
+        )
+        raise HTTPException(status_code=502, detail=detail) from error
+    return pending
+
+
 @router.post("/register", response_model=MessageResponse, status_code=status.HTTP_201_CREATED)
 async def register(
     payload: UserCreate,
     database: AsyncIOMotorDatabase = Depends(database_dependency),
 ) -> MessageResponse:
     if not email_is_configured():
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Надсилання листів не налаштовано. Зверніться до адміністратора.",
-        )
-
-    existing_user = await database.users.find_one({"email": payload.email.lower()})
-    if existing_user is not None:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Ця електронна пошта вже зареєстрована")
-
-    verification_token = secrets.token_urlsafe(32)
-    now = datetime.now(timezone.utc)
-    user_document = {
+        raise HTTPException(status_code=503, detail="Надсилання листів не налаштовано. Зверніться до адміністратора.")
+    address = payload.email.lower()
+    existing_user = await database.users.find_one({"email": address})
+    if is_registered(existing_user):
+        raise HTTPException(status_code=409, detail="Ця електронна пошта вже зареєстрована")
+    await send_registration_link(database, {
         "name": payload.name,
-        "email": payload.email.lower(),
+        "email": address,
         "password_hash": hash_password(payload.password),
-        "role": "student",
-        "email_verified": False,
-        "is_approved": False,
-        "email_verification_token_hash": hashlib.sha256(
-            verification_token.encode("utf-8")
-        ).hexdigest(),
-        "email_verification_expires_at": now + timedelta(hours=24),
-        "notifications": [],
-        "read_books": [],
-        "abandoned_books": [],
-        "unfinished_books": [],
-        "returned_books": [],
-        "favorites": [],
-        "wishlist_books": [],
-        "joined_at": datetime.now(timezone.utc),
-    }
-    try:
-        await database.users.insert_one(user_document)
-    except DuplicateKeyError as error:
-        raise HTTPException(status_code=409, detail="Ця електронна пошта вже зареєстрована") from error
-    try:
-        await send_verification_email(user_document["email"], verification_token)
-    except (OSError, smtplib.SMTPException) as error:
-        logger.error("Registration email delivery failed: %s", type(error).__name__)
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Не вдалося надіслати лист підтвердження. Спробуйте повторити надсилання.",
-        ) from error
-    return MessageResponse(
-        message="Перевірте пошту та перейдіть за посиланням для підтвердження адреси."
-    )
+    })
+    return MessageResponse(message="Перевірте пошту. Акаунт буде створено лише після підтвердження адреси.")
 
 
 @router.post("/resend-verification", response_model=MessageResponse)
@@ -85,38 +83,23 @@ async def resend_verification(
     database: AsyncIOMotorDatabase = Depends(database_dependency),
 ) -> MessageResponse:
     if not email_is_configured():
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Надсилання листів не налаштовано. Зверніться до адміністратора.",
+        raise HTTPException(status_code=503, detail="Надсилання листів не налаштовано. Зверніться до адміністратора.")
+    address = payload.email.lower()
+    user = await database.users.find_one({"email": address})
+    if not is_registered(user):
+        pending = await database.pending_registrations.find_one(
+            {"email": address, "email_verification_expires_at": {"$gt": datetime.now(timezone.utc)}},
+            sort=[("created_at", -1)],
         )
-
-    user = await database.users.find_one({"email": payload.email.lower()})
-    if user is not None and not user.get("email_verified", True):
-        verification_token = secrets.token_urlsafe(32)
-        now = datetime.now(timezone.utc)
-        await database.users.update_one(
-            {"_id": user["_id"]},
-            {
-                "$set": {
-                    "email_verification_token_hash": hashlib.sha256(
-                        verification_token.encode("utf-8")
-                    ).hexdigest(),
-                    "email_verification_expires_at": now + timedelta(hours=24),
-                }
-            },
-        )
-        try:
-            await send_verification_email(user["email"], verification_token)
-        except (OSError, smtplib.SMTPException) as error:
-            logger.error("Verification email resend failed: %s", type(error).__name__)
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="Не вдалося надіслати лист підтвердження.",
-            ) from error
-
-    return MessageResponse(
-        message="Якщо адреса очікує підтвердження, ми надіслали нове посилання."
-    )
+        # Compatibility with unconfirmed accounts created by earlier versions.
+        details = pending or user
+        if details is not None:
+            await send_registration_link(database, details)
+            if pending:
+                # Keep the previous link valid when sending fails. Only retire
+                # the old attempt once the provider accepted its replacement.
+                await database.pending_registrations.delete_one({"_id": pending["_id"]})
+    return MessageResponse(message="Якщо адреса очікує підтвердження, ми надіслали нове посилання. Якщо заявка вже прострочена, зареєструйтеся ще раз.")
 
 
 @router.get("/verify-email", response_model=MessageResponse)
@@ -124,28 +107,57 @@ async def verify_email(
     token: str,
     database: AsyncIOMotorDatabase = Depends(database_dependency),
 ) -> MessageResponse:
-    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
-    now = datetime.now(timezone.utc)
-    result = await database.users.update_one(
-        {
-            "email_verification_token_hash": token_hash,
-            "email_verification_expires_at": {"$gt": now},
-            "email_verified": False,
-        },
-        {
-            "$set": {"email_verified": True},
-            "$unset": {
-                "email_verification_token_hash": "",
-                "email_verification_expires_at": "",
-            },
-        },
-    )
-    if result.modified_count == 0:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Посилання недійсне або прострочене. Запросіть нове.",
+    query = {
+        "email_verification_token_hash": hashlib.sha256(token.encode()).hexdigest(),
+        "email_verification_expires_at": {"$gt": datetime.now(timezone.utc)},
+    }
+    pending = await database.pending_registrations.find_one(query)
+    if pending is None:
+        # Previously sent links still work after deploying the new flow.
+        result = await database.users.update_one(
+            {**query, "email_verified": False, "role": "student"},
+            {"$set": {"email_verified": True}, "$unset": {
+                "email_verification_token_hash": "", "email_verification_expires_at": "",
+            }},
         )
-    return MessageResponse(message="Електронну пошту підтверджено. Тепер можна увійти.")
+        if result.modified_count == 0:
+            raise HTTPException(status_code=400, detail="Посилання недійсне або прострочене. Запросіть нове.")
+        return MessageResponse(message="Електронну пошту підтверджено. Тепер можна увійти.")
+
+    existing = await database.users.find_one({"email": pending["email"]})
+    if is_registered(existing):
+        raise HTTPException(status_code=409, detail="Цю адресу вже підтверджено. Увійдіть до свого акаунта.")
+    verified_fields = {
+        "name": pending["name"],
+        "email": pending["email"],
+        "password_hash": pending["password_hash"],
+        "email_verified": True,
+    }
+    if existing is not None:
+        # Complete an old unconfirmed student record without losing its ID/data.
+        result = await database.users.update_one(
+            {"_id": existing["_id"], "email_verified": False, "role": "student"},
+            {"$set": verified_fields, "$unset": {
+                "email_verification_token_hash": "", "email_verification_expires_at": "",
+            }},
+        )
+        if result.modified_count == 0:
+            raise HTTPException(status_code=409, detail="Цю адресу вже підтверджено. Увійдіть до свого акаунта.")
+    else:
+        user_document = {
+            **verified_fields,
+            "role": "student", "is_approved": False,
+            "notifications": [], "read_books": [], "abandoned_books": [],
+            "unfinished_books": [], "returned_books": [], "favorites": [], "wishlist_books": [],
+            "joined_at": datetime.now(timezone.utc),
+        }
+        try:
+            await database.users.insert_one(user_document)
+        except DuplicateKeyError as error:
+            # The unique email index makes concurrent confirmations safe.
+            raise HTTPException(status_code=409, detail="Цю адресу вже підтверджено. Увійдіть до свого акаунта.") from error
+    await database.pending_registrations.delete_many({"email": pending["email"]})
+    return MessageResponse(message="Пошту підтверджено й акаунт створено. Тепер можна увійти.")
 
 
 @router.post("/login", response_model=TokenResponse)
@@ -154,6 +166,13 @@ async def login(
     database: AsyncIOMotorDatabase = Depends(database_dependency),
 ) -> TokenResponse:
     user = await database.users.find_one({"email": payload.email.lower()})
+    if user is None:
+        pending = await database.pending_registrations.find_one(
+            {"email": payload.email.lower(), "email_verification_expires_at": {"$gt": datetime.now(timezone.utc)}},
+            sort=[("created_at", -1)],
+        )
+        if pending and verify_password(payload.password, pending["password_hash"]):
+            raise HTTPException(status_code=403, detail="Підтвердіть пошту, щоб завершити створення акаунта.")
     if user is None or not verify_password(payload.password, user["password_hash"]):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

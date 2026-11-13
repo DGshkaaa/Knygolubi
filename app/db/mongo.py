@@ -12,6 +12,11 @@ async def connect_to_mongo() -> None:
     client = AsyncIOMotorClient(settings.mongodb_url)
     database = client[settings.mongodb_database]
     await database.users.create_index("email", unique=True)
+    await database.pending_registrations.create_index(
+        "email_verification_expires_at", expireAfterSeconds=0
+    )
+    await database.pending_registrations.create_index("email_verification_token_hash", unique=True)
+    await database.pending_registrations.create_index([("email", 1), ("created_at", -1)])
 
 
 async def close_mongo_connection() -> None:

@@ -16,6 +16,16 @@ logger = logging.getLogger(__name__)
 class EmailDeliveryError(OSError):
     """The configured email provider did not accept the message."""
 
+    def __init__(self, message: str, *, public_message: str | None = None):
+        super().__init__(message)
+        self.public_message = public_message
+
+
+MAIL_CONFIGURATION_MESSAGE = (
+    "Надсилання листів тимчасово недоступне: адміністратору потрібно оновити "
+    "налаштування пошти. Акаунт не створено. Спробуйте пізніше."
+)
+
 
 def email_is_configured() -> bool:
     if settings.brevo_api_key:
@@ -32,6 +42,10 @@ def email_is_configured() -> bool:
 
 def _send_brevo_email(message: EmailMessage) -> None:
     """Use HTTPS (port 443), supported on Render Free where SMTP is blocked."""
+    api_key = (settings.brevo_api_key or "").strip()
+    if api_key.startswith("xsmtpsib-"):
+        logger.error("BREVO_API_KEY contains an SMTP key; use a key from API keys & MCP")
+        raise EmailDeliveryError("SMTP key cannot authenticate the HTTPS API", public_message=MAIL_CONFIGURATION_MESSAGE)
     payload = {
         "sender": {"email": str(message["From"]), "name": settings.email_from_name},
         "to": [{"email": str(message["To"])}],
@@ -43,7 +57,7 @@ def _send_brevo_email(message: EmailMessage) -> None:
         "https://api.brevo.com/v3/smtp/email",
         data=json.dumps(payload).encode("utf-8"),
         headers={
-            "api-key": settings.brevo_api_key,
+            "api-key": api_key,
             "Content-Type": "application/json",
             "Accept": "application/json",
         },
@@ -57,6 +71,9 @@ def _send_brevo_email(message: EmailMessage) -> None:
     except HTTPError as error:
         # Never log provider response bodies, keys, recipient addresses or tokens.
         logger.error("Brevo delivery rejected: HTTP %s", error.code)
+        if error.code == 401:
+            logger.error("Check BREVO_API_KEY: use the complete active API key from API keys & MCP, not an SMTP key")
+            raise EmailDeliveryError("Email API authentication failed", public_message=MAIL_CONFIGURATION_MESSAGE) from error
         raise EmailDeliveryError("Email provider rejected delivery") from error
     except (URLError, TimeoutError) as error:
         logger.error("Brevo connection failed: %s", type(error).__name__)

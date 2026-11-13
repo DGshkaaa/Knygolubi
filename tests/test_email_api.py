@@ -5,6 +5,7 @@ from email.message import EmailMessage
 from unittest.mock import patch, MagicMock
 from urllib.error import HTTPError, URLError
 from app.core import email
+from app.core.config import Settings
 
 
 class BrevoTests(unittest.IsolatedAsyncioTestCase):
@@ -21,6 +22,33 @@ class BrevoTests(unittest.IsolatedAsyncioTestCase):
         context = MagicMock()
         context.__enter__.return_value = response
         return context
+
+    async def test_smtp_key_is_rejected_without_network_or_secret_disclosure(self):
+        key = 'xsmtpsib-private-test-value'
+        with patch.object(email.settings, 'brevo_api_key', key), patch.object(email, 'urlopen') as send:
+            with self.assertLogs(email.logger, level='ERROR') as logs:
+                with self.assertRaises(email.EmailDeliveryError) as caught:
+                    await email.send_verification_email('reader@example.com', 'test-token')
+            send.assert_not_called()
+            self.assertEqual(caught.exception.public_message, email.MAIL_CONFIGURATION_MESSAGE)
+            self.assertNotIn(key, str(caught.exception))
+            self.assertNotIn(key, '\n'.join(logs.output))
+
+    async def test_401_explains_configuration_failure_without_exposing_key(self):
+        error = HTTPError('https://api.brevo.com', 401, 'rejected', {}, io.BytesIO(b'private provider response'))
+        with patch.object(email, 'urlopen', side_effect=error):
+            with self.assertRaises(email.EmailDeliveryError) as caught:
+                await email.send_verification_email('reader@example.com', 'test-token')
+        self.assertEqual(caught.exception.public_message, email.MAIL_CONFIGURATION_MESSAGE)
+        self.assertNotIn('test-key', caught.exception.public_message)
+
+    async def test_accidental_whitespace_is_removed_from_key(self):
+        settings = Settings(_env_file=None, brevo_api_key='  test-key\n')
+        self.assertEqual(settings.brevo_api_key, 'test-key')
+        self.assertIsNone(Settings(_env_file=None, brevo_api_key='   ').brevo_api_key)
+        with patch.object(email.settings, 'brevo_api_key', ' test-key\n'), patch.object(email, 'urlopen', return_value=self.response()) as send:
+            await email.send_verification_email('reader@example.com', 'test-token')
+        self.assertEqual(send.call_args.args[0].get_header('Api-key'), 'test-key')
 
     async def test_https_delivery_without_smtp_credentials(self):
         self.assertTrue(email.email_is_configured())

@@ -727,7 +727,7 @@ function AuthForm({ mode }) {
       else {
         await register({ ...form, name: form.name.trim(), email });
         setCanResend(true);
-        setMessage(`Лист підтвердження надіслано на ${email}. Відкрийте його та натисніть «Підтвердити пошту». Посилання дійсне 24 години.`);
+        setMessage(`Лист підтвердження надіслано на ${email}. Акаунт буде створено лише після переходу за посиланням у листі. Посилання дійсне 24 години.`);
         return;
       }
       navigate("/");
@@ -765,8 +765,8 @@ function AuthForm({ mode }) {
             {isRegister && <label>Ваше ім’я<input required name="name" autoComplete="name" maxLength={120} placeholder="Як до вас звертатися?" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label>}
             <label>Електронна пошта<input required name="email" autoComplete="email" type="email" placeholder="you@example.com" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} /></label>
             <label>Пароль<span className="password-control"><input required name="password" autoComplete={isRegister ? "new-password" : "current-password"} minLength={8} maxLength={128} type={showPassword ? "text" : "password"} placeholder={isRegister ? "Придумайте надійний пароль" : "Введіть ваш пароль"} value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} /><button type="button" aria-label={showPassword ? "Приховати пароль" : "Показати пароль"} aria-pressed={showPassword} onClick={() => setShowPassword(!showPassword)}>{showPassword ? "Сховати" : "Показати"}</button></span></label>
-            {isRegister && <small className="field-hint">Від 8 до 128 символів. Після реєстрації підтвердіть вашу пошту.</small>}
-            <button className="primary auth-submit" type="submit">{busy ? "Зачекайте…" : isRegister ? "Створити профіль" : "Увійти"}<span aria-hidden="true"> →</span></button>
+            {isRegister && <small className="field-hint">Від 8 до 128 символів. Створимо акаунт після підтвердження пошти.</small>}
+            <button className="primary auth-submit" type="submit">{busy ? "Зачекайте…" : isRegister ? "Підтвердити пошту" : "Увійти"}<span aria-hidden="true"> →</span></button>
           </fieldset>
         </form>
         {error && <p className="auth-feedback error" role="alert">{error}</p>}

@@ -1,4 +1,5 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import field_validator
 
 
 class Settings(BaseSettings):
@@ -19,6 +20,11 @@ class Settings(BaseSettings):
     email_from_email: str | None = None
     email_from_name: str = "Книголюби"
     frontend_url: str = "http://localhost:5173"
+
+    @field_validator("brevo_api_key", mode="before")
+    @classmethod
+    def normalize_brevo_key(cls, value):
+        return (value.strip() or None) if isinstance(value, str) else value
 
     model_config = SettingsConfigDict(
         env_file=".env",
