@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.auth import router as auth_router
+from app.api.board import router as board_router
 from app.api.books import router as books_router
 from app.api.notifications import router as notifications_router
 from app.api.reviews import router as reviews_router
@@ -34,6 +35,7 @@ app.add_middleware(
     expose_headers=["X-Has-Next", "X-Total-Count"],
 )
 app.include_router(auth_router)
+app.include_router(board_router)
 app.include_router(books_router)
 app.include_router(notifications_router)
 app.include_router(reviews_router)

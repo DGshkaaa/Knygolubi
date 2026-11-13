@@ -20,6 +20,7 @@ import {
 import { useAuth } from "./auth";
 import "./App.css";
 import "./forms.css";
+import { BoardTabs, BoardPage, BoardDetail, BoardEditor } from "./Board";
 
 const genreLabels = {
   Fiction: "Художня література",
@@ -113,6 +114,8 @@ function NotificationBell() {
                   {!item.is_read && <span className="notification-unread-dot" aria-label="Непрочитане" />}
                   {item.type === "new_book" && item.book_id ? (
                     <Link to={`/books/${item.book_id}`} onClick={() => setOpen(false)}>{item.message}</Link>
+                  ) : item.board_post_id ? (
+                    <Link to={`/board/${item.board_post_id}`} onClick={() => setOpen(false)}>{item.message}</Link>
                   ) : item.message}
                 </p>
               ))
@@ -212,6 +215,10 @@ function Layout() {
       <main>
         <Routes>
           <Route path="/" element={<Catalog />} />
+          <Route path="/board" element={<BoardPage />} />
+          <Route path="/board/new" element={<BoardEditor key="new-post" />} />
+          <Route path="/board/:postId" element={<BoardDetail />} />
+          <Route path="/board/:postId/edit" element={<BoardEditor />} />
           <Route path="/login" element={<AuthForm key="login" mode="login" />} />
           <Route path="/register" element={<AuthForm key="register" mode="register" />} />
           <Route path="/verify-email" element={<VerifyEmailPage />} />
@@ -317,7 +324,6 @@ function Catalog() {
   const [availability, setAvailability] = useState("");
   const [sort, setSort] = useState("");
   const [page, setPage] = useState(1);
-  const [section, setSection] = useState("catalog");
   const [hasNextPage, setHasNextPage] = useState(false);
   const [pageSize, setPageSize] = useState(getCatalogPageSize);
   const [loading, setLoading] = useState(true);
@@ -342,13 +348,11 @@ function Catalog() {
     const params = {};
     params.page = page;
     params.page_size = pageSize;
-    if (section === "catalog") {
-      if (search) params.search = search;
-      if (genre) params.genre = genre;
-      if (availability) params.availability = availability;
-      if (sort) params.sort_by = sort;
-    }
-    (section === "announcements" ? booksApi.announcements(params) : booksApi.list(params))
+    if (search) params.search = search;
+    if (genre) params.genre = genre;
+    if (availability) params.availability = availability;
+    if (sort) params.sort_by = sort;
+    booksApi.list(params)
       .then(({ data, headers }) => {
         if (!active) return;
         setBooks(data);
@@ -358,25 +362,15 @@ function Catalog() {
       .catch(() => { if (active) setError("Не вдалося завантажити каталог."); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [search, genre, availability, sort, page, pageSize, section]);
+  }, [search, genre, availability, sort, page, pageSize]);
   return (
     <section className="page catalog-page">
       <div className="page-heading">
-        <p className="eyebrow">{section === "catalog" ? "COLLEGE BOOKSHELF" : "BOOKWAY COMMUNITY"}</p>
-        <h1>{section === "catalog" ? "Знайди наступну історію" : "Дошка оголошень"}</h1>
+        <p className="eyebrow">БІБЛІОТЕКА BOOKWAY</p>
+        <h1>Знайди наступну історію</h1>
       </div>
-      <div className="workspace-tabs catalog-tabs" role="tablist" aria-label="Каталог та оголошення">
-        <button className={section === "catalog" ? "active" : ""} onClick={() => { setSection("catalog"); setPage(1); }} role="tab" aria-selected={section === "catalog"}>
-          <span aria-hidden="true">▦</span>Каталог
-        </button>
-        <button className={section === "announcements" ? "active" : ""} onClick={() => { setSection("announcements"); setPage(1); }} role="tab" aria-selected={section === "announcements"}>
-          <span className="catalog-tab-bell" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9ZM10 21h4" /></svg>
-          </span>
-          Дошка оголошень
-        </button>
-      </div>
-      {section === "catalog" && <div className="catalog-tools">
+      <BoardTabs active="catalog" />
+      <div className="catalog-tools">
         <div className="catalog-search">
           <label className="catalog-search-field">
             <span className="catalog-search-icon" aria-hidden="true">
@@ -439,19 +433,7 @@ function Catalog() {
             </select>
           </label>
         </aside>
-      </div>}
-      {section === "announcements" && (
-        <div className="announcement-intro">
-          <span className="announcement-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9ZM10 21h4" /></svg>
-          </span>
-          <div>
-            <strong>Стрічка нових надходжень</strong>
-            <p>Свіжі книги спільноти BookWay — найновіші публікації першими.</p>
-          </div>
-          <span className="announcement-label">НОВИНКИ</span>
-        </div>
-      )}
+      </div>
       {error && <p className="error">{error}</p>}
       {loading ? (
         <div className="catalog-loading" role="status" aria-live="polite">
@@ -462,12 +444,10 @@ function Catalog() {
         <>
           <div className="book-grid">
             {books.map((book) => {
-              const isNew = Boolean(book.published_at);
               return (
                 <Link className="book-card" to={`/books/${book._id}`} key={book._id}>
                   <div className="catalog-cover-wrap">
                     <BookCover book={book} className="catalog-cover" />
-                    {section === "announcements" && isNew && <span className="new-book-badge">✦ Новинка</span>}
                   </div>
                   <div className="book-card-content">
                     <p className="genre">{genreLabel(book.genre)}</p>
@@ -487,7 +467,7 @@ function Catalog() {
             })}
           </div>
           {!error && books.length === 0 && (
-            <p className="empty">{section === "catalog" ? "Каталог поки порожній." : "Нових оголошень поки немає."}</p>
+            <p className="empty">Каталог поки порожній.</p>
           )}
         </>
       )}
@@ -980,7 +960,7 @@ function Dashboard() {
             .map((item, index) => (
               <p className={`notification ${item.is_read ? "" : "unread"}`} key={`${item.created_at}-${index}`}>
                 {!item.is_read && <span className="notification-unread-dot" aria-label="Непрочитане" />}
-                {item.message}
+                {item.board_post_id ? <Link to={`/board/${item.board_post_id}`}>{item.message} ↗</Link> : item.message}
               </p>
             ))
         ) : (
@@ -1016,19 +996,23 @@ function ProfileBookList({ title, books, empty = "Поки що немає кн�
 }
 
 function ProfileView({ profile, editable = false, showAccountStatus = false, onSaved }) {
-  const [form, setForm] = useState({ name: profile.name, avatar_url: profile.avatar_url || "" });
+  const [form, setForm] = useState({ name: profile.name, avatar_url: profile.avatar_url || "", telegram_username: profile.telegram_username || "" });
   const [editing, setEditing] = useState(false);
   const [openList, setOpenList] = useState(null);
   const [saveError, setSaveError] = useState("");
+  const [saving, setSaving] = useState(false);
   const save = async () => {
+    if (saving) return;
+    setSaving(true);
     try {
-      await profilesApi.update({ ...form, avatar_url: form.avatar_url || null });
+      await profilesApi.update({ ...form, avatar_url: form.avatar_url || null, telegram_username: form.telegram_username.trim() || null });
       setEditing(false);
       setSaveError("");
       onSaved?.();
     } catch (error) {
-      setSaveError(error.response?.data?.detail || "Не вдалося зберегти профіль.");
-    }
+      const detail = error.response?.data?.detail;
+      setSaveError(typeof detail === "string" ? detail : Array.isArray(detail) ? detail.map(item => item.msg.replace(/^Value error, /, "")).join(" ") : "Не вдалося зберегти профіль.");
+    } finally { setSaving(false); }
   };
   const avatar = profile.avatar_url ? <img src={profile.avatar_url} alt={profile.name} /> : <span>{profile.name.slice(0, 1).toUpperCase()}</span>;
   const toggleList = (list) => setOpenList((current) => current === list ? null : list);
@@ -1051,18 +1035,21 @@ function ProfileView({ profile, editable = false, showAccountStatus = false, onS
           <p className="eyebrow">ЧИТАЦЬКИЙ ПРОФІЛЬ</p>
           {editing ? (
             <div className="profile-edit">
-              <input aria-label="Ім’я користувача" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
-              <input aria-label="URL аватарки" placeholder="URL аватарки" value={form.avatar_url} onChange={(event) => setForm({ ...form, avatar_url: event.target.value })} />
+              <input aria-label="Ім’я користувача" disabled={saving} value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
+              <input aria-label="URL аватарки" disabled={saving} placeholder="URL аватарки" value={form.avatar_url} onChange={(event) => setForm({ ...form, avatar_url: event.target.value })} />
+              <label className="profile-telegram-field">Telegram <span>необов’язково</span><input disabled={saving} placeholder="@book_reader або https://t.me/book_reader" maxLength={80} autoCapitalize="none" spellCheck={false} aria-describedby="telegram-help" value={form.telegram_username} onChange={(event) => setForm({ ...form, telegram_username: event.target.value })} /></label>
+              <small id="telegram-help" className="profile-contact-help">Додайте нік, щоб інші читачі могли написати вам. Він буде видимий у профілі. Очистіть поле, щоб прибрати контакт.</small>
               <div className="profile-edit-actions">
-                <button className="primary" onClick={save}>Зберегти</button>
-                <button className="secondary" onClick={() => { setEditing(false); setForm({ name: profile.name, avatar_url: profile.avatar_url || "" }); setSaveError(""); }}>Скасувати</button>
+                <button className="primary" disabled={saving} onClick={save}>{saving ? "Зберігаємо…" : "Зберегти"}</button>
+                <button className="secondary" disabled={saving} onClick={() => { setEditing(false); setForm({ name: profile.name, avatar_url: profile.avatar_url || "", telegram_username: profile.telegram_username || "" }); setSaveError(""); }}>Скасувати</button>
               </div>
               {saveError && <p className="error">{saveError}</p>}
             </div>
           ) : (
             <>
               <h1>{profile.name}</h1>
-              <p className="profile-email">{profile.email}</p>
+              {profile.email && <p className="profile-email">{profile.email}</p>}
+              {profile.telegram_username && <a className="profile-telegram-link" href={`https://t.me/${profile.telegram_username}`} target="_blank" rel="noopener noreferrer"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="m21 4-3 16-6-5-3 3 1-5 8-6-10 5-5-2 18-6Z" /></svg><span>{editable ? `@${profile.telegram_username}` : "Написати в Telegram"}<small>{editable ? "Відкрити мій Telegram ↗" : `@${profile.telegram_username} ↗`}</small></span></a>}
               <div className="profile-badges">
                 <span className="profile-badge role"><span aria-hidden="true">✦</span>{roleLabel}</span>
                 {showAccountStatus && (

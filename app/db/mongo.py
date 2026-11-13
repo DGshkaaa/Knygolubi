@@ -17,6 +17,9 @@ async def connect_to_mongo() -> None:
     )
     await database.pending_registrations.create_index("email_verification_token_hash", unique=True)
     await database.pending_registrations.create_index([("email", 1), ("created_at", -1)])
+    await database.board_posts.create_index([("status", 1), ("expires_at", 1), ("created_at", -1)])
+    await database.board_posts.create_index([("owner_id", 1), ("created_at", -1)])
+    await database.board_threads.create_index([("post_id", 1), ("responder_id", 1)], unique=True)
 
 
 async def close_mongo_connection() -> None:

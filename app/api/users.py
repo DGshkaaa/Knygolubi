@@ -52,6 +52,7 @@ async def build_profile(database: AsyncIOMotorDatabase, user: dict) -> ProfileRe
         "email_verified": user.get("email_verified", True),
         "is_approved": user.get("is_approved", True),
         "avatar_url": user.get("avatar_url"),
+        "telegram_username": user.get("telegram_username"),
         "currently_reading": currently_reading,
         "want_to_read_books": want_to_read,
         "favorites": await books_for_ids(database, serialize_ids(favorite_ids)),
@@ -95,7 +96,8 @@ async def public_profile(
     user = await database.users.find_one({"_id": parse_object_id(user_id)})
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    return await build_profile(database, user)
+    profile = await build_profile(database, user)
+    return profile.model_copy(update={"email": None})
 
 
 @router.post("/me/favorites/{book_id}")

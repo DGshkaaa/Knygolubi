@@ -35,6 +35,19 @@ export const booksApi = {
   deleteReview: (bookId, reviewId) => api.delete(`/books/${bookId}/reviews/${reviewId}`),
 }
 
+export const boardApi = {
+  list: (params) => api.get('/board', { params }),
+  mine: (params) => api.get('/board/mine', { params }),
+  get: (id) => api.get(`/board/${id}`),
+  create: (data) => api.post('/board', data),
+  update: (id, data) => api.put(`/board/${id}`, data),
+  status: (id, status) => api.patch(`/board/${id}/status`, { status }),
+  remove: (id) => api.delete(`/board/${id}`),
+  responses: (id) => api.get(`/board/${id}/responses`),
+  respond: (id, text) => api.post(`/board/${id}/responses`, { text }),
+  message: (id, text) => api.post(`/board/threads/${id}/messages`, { text }),
+}
+
 export const notificationsApi = {
   list: () => api.get('/users/me/notifications'),
   markRead: () => api.patch('/users/me/notifications/read'),

@@ -20,6 +20,7 @@ class Notification(BaseModel):
     created_at: datetime = Field(default_factory=datetime.utcnow)
     type: str = "general"
     book_id: PyObjectId | None = None
+    board_post_id: PyObjectId | None = None
     notification_id: str | None = None
 
 
