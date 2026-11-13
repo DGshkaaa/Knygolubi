@@ -2,6 +2,7 @@ from typing import Annotated
 
 from datetime import datetime, timedelta, timezone
 import hashlib
+import logging
 import secrets
 import smtplib
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -21,6 +22,7 @@ from app.schemas.auth import (
 
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+logger = logging.getLogger(__name__)
 
 
 @router.post("/register", response_model=MessageResponse, status_code=status.HTTP_201_CREATED)
@@ -67,6 +69,7 @@ async def register(
     try:
         await send_verification_email(user_document["email"], verification_token)
     except (OSError, smtplib.SMTPException) as error:
+        logger.error("Registration email delivery failed: %s", type(error).__name__)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Не вдалося надіслати лист підтвердження. Спробуйте повторити надсилання.",
@@ -105,6 +108,7 @@ async def resend_verification(
         try:
             await send_verification_email(user["email"], verification_token)
         except (OSError, smtplib.SMTPException) as error:
+            logger.error("Verification email resend failed: %s", type(error).__name__)
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail="Не вдалося надіслати лист підтвердження.",

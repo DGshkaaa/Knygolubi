@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     smtp_password: str | None = None
     smtp_from_email: str | None = None
     smtp_use_ssl: bool = False
+    brevo_api_key: str | None = None
+    email_from_email: str | None = None
+    email_from_name: str = "Книголюби"
     frontend_url: str = "http://localhost:5173"
 
     model_config = SettingsConfigDict(
